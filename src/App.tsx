@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { exercises, type Exercise } from "./data";
 import { activateCloudAccount, confirmCloudWrite, confirmPendingCloudWrites, deactivateCloudAccount, read, write } from "./persistence";
-import { DEMO_ACCOUNT, DEMO_MODE, demoFriends, initializeDemo, saveDemoFriends } from "./demo";
+import { DEMO_MODE, demoFriends, findDemoSession, initializeDemoAccount, loginDemoAccount, registerDemoAccount, saveDemoFriends, saveDemoSession, clearDemoSession, resetDemoAccountData, updateDemoAccountName } from "./demo";
 
 type Section = "inici" | "entrenar" | "progres" | "nutricio" | "mercat" | "gimnasos" | "calendari" | "social" | "perfil";
 type Account = { id: string; name: string; email: string };
@@ -65,9 +65,12 @@ export default function App() {
 
   useEffect(() => {
     if (DEMO_MODE) {
-      initializeDemo();
-      void activateCloudAccount(DEMO_ACCOUNT);
-      try { setCurrent(JSON.parse(localStorage.getItem("tf_demo_account") || "null") || DEMO_ACCOUNT); } catch { setCurrent(DEMO_ACCOUNT); }
+      const account = findDemoSession();
+      if (account) {
+        initializeDemoAccount(account);
+        void activateCloudAccount(account);
+        setCurrent(account);
+      }
       setCheckingSession(false);
       return;
     }
@@ -112,7 +115,15 @@ export default function App() {
   }, []);
 
   async function logout() {
-    if (DEMO_MODE) { notify("La demostració continua activa en aquest navegador."); return; }
+    if (DEMO_MODE) {
+      clearDemoSession();
+      deactivateCloudAccount();
+      setCurrent(null);
+      setAuthMode("login");
+      setSection("inici");
+      setNotice("");
+      return;
+    }
     try {
       await confirmPendingCloudWrites();
       const response = await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
@@ -126,12 +137,29 @@ export default function App() {
   }
 
   async function authenticate(event: React.FormEvent<HTMLFormElement>) {
-    if (DEMO_MODE) { event.preventDefault(); return; }
     event.preventDefault();
+    const form = event.currentTarget;
     const data = new FormData(event.currentTarget);
     const email = String(data.get("email")).trim().toLowerCase();
     const password = String(data.get("password") || "");
     const name = String(data.get("name") || "").trim();
+    if (DEMO_MODE) {
+      try {
+        const account = authMode === "register"
+          ? await registerDemoAccount(name, email, password)
+          : await loginDemoAccount(email, password);
+        if (authMode === "register") initializeDemoAccount(account);
+        saveDemoSession(account);
+        await activateCloudAccount(account);
+        setCurrent(account);
+        setAuthMode("login");
+        setNotice("");
+        form.reset();
+      } catch (error) {
+        notify(error instanceof Error ? error.message : "No s'ha pogut completar l'accés demo.");
+      }
+      return;
+    }
     if(authMode==="reset"){
       try{
         const response=await fetch("/api/reset-request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email})});
@@ -155,6 +183,7 @@ export default function App() {
 
   if (!current) return (
     <main className="auth-screen">
+      {DEMO_MODE&&<div className="notice auth-demo-notice">DEMO · Les dades es guarden només en aquest navegador</div>}
       <div className="auth-brand"><span>T</span><div><strong>TITANFIT</strong><small>ENTRENAMENT · PROGRESSIÓ · MERCAT</small></div></div>
       <form className="auth-card" onSubmit={authenticate}>
         <div className="eyebrow">TITANFIT ACCOUNT</div>
@@ -165,10 +194,11 @@ export default function App() {
         <button className="primary" type="submit">{authMode === "register" ? "Crear compte" : authMode === "reset" ? "Enviar sol·licitud" : "Iniciar sessió"}</button>
         <div className="auth-links">
           {authMode !== "login" && <button type="button" onClick={() => setAuthMode("login")}>Tornar a l'inici de sessió</button>}
-          {authMode === "login" && <><button type="button" onClick={() => setAuthMode("register")}>Crear compte</button><button type="button" onClick={() => setAuthMode("reset")}>He oblidat la contrasenya</button></>}
+          {authMode === "login" && <><button type="button" onClick={() => setAuthMode("register")}>Crear compte</button>{!DEMO_MODE&&<button type="button" onClick={() => setAuthMode("reset")}>He oblidat la contrasenya</button>}</>}
         </div>
-        <p className="privacy-note">El compte i les dades se sincronitzen amb el servidor de TITANFIT. Les dades locals anteriors s'importen en iniciar sessió.</p>
+        <p className="privacy-note">{DEMO_MODE ? "Demo local: les dades s'emmagatzemen en aquest navegador. No és autenticació real ni es sincronitza." : "Compte i dades del servidor TITANFIT."}</p>
       </form>
+      {notice&&<div className="toast" role="alert">{notice}</div>}
     </main>
   );
 
@@ -189,8 +219,8 @@ export default function App() {
         <button className="profile-nav" onClick={() => setSection("perfil")}><span className="avatar">{current.name.slice(0, 1).toUpperCase()}</span><span><strong>{current.name}</strong><small>Perfil privat</small></span></button>
       </aside>
       <main className="main">
-        {DEMO_MODE && <div className="notice" role="status">DEMO · Les dades es guarden només en aquest navegador <button className="secondary" onClick={()=>{if(window.confirm("Restablir les dades de demostració d'aquest navegador?")){initializeDemo(true);window.location.reload();}}}>Restablir demo</button></div>}
-        <header className="topbar"><div><small>{today()}</small><strong>{sectionTitle(section)}</strong></div><div className="topbar-actions"><button className="mobile-preview-button" onClick={()=>setMobilePreview(true)}>Vista mòbil</button>{!DEMO_MODE&&<button className="icon-btn" title="Tancar sessió" onClick={logout}>↪</button>}</div></header>
+        {DEMO_MODE && <div className="notice" role="status">DEMO · Les dades es guarden només en aquest navegador <button className="secondary" onClick={()=>{if(window.confirm("Restablir les dades de demostració d'aquest navegador?")){resetDemoAccountData(current);window.location.reload();}}}>Restablir demo</button></div>}
+        <header className="topbar"><div><small>{today()}</small><strong>{sectionTitle(section)}</strong></div><div className="topbar-actions"><button className="mobile-preview-button" onClick={()=>setMobilePreview(true)}>Vista mòbil</button><button className="icon-btn" title="Tancar sessió" onClick={logout}>↪</button></div></header>
         {section === "inici" && <Dashboard account={current} go={setSection} notify={notify} />}
         {section === "entrenar" && <Training account={current} notify={notify} />}
         {section === "progres" && <Progress account={current} notify={notify} />}
@@ -471,7 +501,7 @@ function ShoppingList({account}:{account:Account}){
 }
 
 function Marketplace({account,notify}:{account:Account;notify:(s:string)=>void}) {
-  const listingsKey=DEMO_MODE?"tf_demo_listings":"tf_listings";
+  const listingsKey=DEMO_MODE?"tf_demo_listings_"+account.id:"tf_listings";
   const [items,setItems]=useState<Listing[]>(()=>read(listingsKey,[]));
   const [query,setQuery]=useState("");
   const [category,setCategory]=useState("Totes");
@@ -615,7 +645,7 @@ function Social({account,notify}:{account:Account;notify:(s:string)=>void}) {
 }function Profile({account,setCurrent,notify}:{account:Account;setCurrent:(account:Account|null)=>void;notify:(s:string)=>void}) {
   const [name,setName]=useState(account.name);
   const [profile,setProfile]=useState(()=>read(`tf_profile_${account.id}`,{age:"",height:"",weight:"",experience:"Principiant",goal:"Millorar la forma",days:"3",gym:""}));
-  async function save(e:React.FormEvent){e.preventDefault();try{const key=`tf_profile_${account.id}`;if(!write(key,profile))throw new Error("No s'ha pogut desar la configuració local.");await confirmCloudWrite(key);const updated={...account,name:name.trim()};if(DEMO_MODE)write("tf_demo_account",updated);setCurrent(updated);notify(DEMO_MODE?"Perfil desat en aquest navegador.":"Perfil actualitzat al servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut actualitzar el perfil.");}}
-  async function deleteAccount(){if(DEMO_MODE){if(window.confirm("Restablir les dades demo?")){initializeDemo(true);window.location.reload();}return;}if(!window.confirm("Vols eliminar aquest compte i totes les dades sincronitzades?"))return;try{const response=await fetch("/api/delete-account",{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar el compte.");[...Object.keys(localStorage)].filter(k=>k.endsWith(account.id)||k.startsWith(`tf_migration_backup_${account.id}_`)).forEach(k=>localStorage.removeItem(k));deactivateCloudAccount();setCurrent(null);notify("Compte i dades eliminats del servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar el compte.");}}
+  async function save(e:React.FormEvent){e.preventDefault();try{const key=`tf_profile_${account.id}`;if(!write(key,profile))throw new Error("No s'ha pogut desar la configuració local.");await confirmCloudWrite(key);const updated={...account,name:name.trim()};if(DEMO_MODE)updateDemoAccountName(account.id,updated.name);setCurrent(updated);notify(DEMO_MODE?"Perfil desat en aquest navegador.":"Perfil actualitzat al servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut actualitzar el perfil.");}}
+  async function deleteAccount(){if(DEMO_MODE){if(window.confirm("Restablir les dades demo?")){resetDemoAccountData(account);window.location.reload();}return;}if(!window.confirm("Vols eliminar aquest compte i totes les dades sincronitzades?"))return;try{const response=await fetch("/api/delete-account",{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar el compte.");[...Object.keys(localStorage)].filter(k=>k.endsWith(account.id)||k.startsWith(`tf_migration_backup_${account.id}_`)).forEach(k=>localStorage.removeItem(k));deactivateCloudAccount();setCurrent(null);notify("Compte i dades eliminats del servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar el compte.");}}
   return <div className="page"><div className="section-heading"><div><span>CONFIGURACIÓ PRIVADA</span><h2>Perfil</h2></div></div><section className="profile-layout"><form className="panel profile-card" onSubmit={save}><div className="profile-avatar">{account.name.slice(0,1).toUpperCase()}</div><label>Nom visible<input value={name} onChange={e=>setName(e.target.value)} required/></label><label>Correu electrònic<input value={account.email} readOnly/></label><div className="profile-grid"><label>Edat<input type="number" min="14" value={profile.age} onChange={e=>setProfile({...profile,age:e.target.value})}/></label><label>Altura (cm)<input type="number" min="100" value={profile.height} onChange={e=>setProfile({...profile,height:e.target.value})}/></label><label>Pes corporal (kg)<input type="number" step="0.1" value={profile.weight} onChange={e=>setProfile({...profile,weight:e.target.value})}/></label><label>Experiència<select value={profile.experience} onChange={e=>setProfile({...profile,experience:e.target.value})}><option>Principiant</option><option>Intermedi</option><option>Avançat</option></select></label><label>Objectiu<select value={profile.goal} onChange={e=>setProfile({...profile,goal:e.target.value})}><option>Millorar la forma</option><option>Guanyar força</option><option>Guanyar massa muscular</option><option>Pèrdua de pes</option></select></label><label>Dies disponibles<input type="number" min="1" max="7" value={profile.days} onChange={e=>setProfile({...profile,days:e.target.value})}/></label><label>Gimnàs habitual<input value={profile.gym} onChange={e=>setProfile({...profile,gym:e.target.value})} placeholder="Opcional"/></label></div><button className="primary" type="submit">Guardar canvis</button></form><aside className="panel privacy-panel"><span className="eyebrow">PRIVACITAT</span><h3>{DEMO_MODE?"Demostració en aquest navegador":"Les teves dades se sincronitzen al servidor"}</h3><p>{DEMO_MODE?"Les modificacions queden guardades localment en aquest navegador i no s'envien a cap servidor.":"La sessió és privada i les dades personals s'aïllen per compte. La sincronització funciona quan TITANFIT està desplegat en un servidor accessible."}</p><button className="danger full" onClick={deleteAccount}>{DEMO_MODE?"Restablir dades demo":"Eliminar el compte i les dades"}</button></aside></section></div>;
 }
