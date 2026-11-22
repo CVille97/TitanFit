@@ -47,11 +47,6 @@ export async function loginDemoAccount(email: string, password: string): Promise
   return { id: account.id, name: account.name, email: account.email };
 }
 
-export function findDemoSession(): DemoAccount | null {
-  const id = localStorage.getItem(SESSION_KEY); if (!id) return null;
-  const account = accounts().find(item => item.id === id);
-  return account ? { id: account.id, name: account.name, email: account.email } : null;
-}
 export function saveDemoSession(account: DemoAccount) { localStorage.setItem(SESSION_KEY, account.id); }
 export function clearDemoSession() { localStorage.removeItem(SESSION_KEY); }
 export function updateDemoAccountName(id: string, name: string) {
@@ -65,7 +60,14 @@ function getJson(key: string): unknown {
   try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
 }
 function setJson(key: string, value: unknown) { localStorage.setItem(key, JSON.stringify(value)); }
-const LEGACY_SAMPLE_ID = /^demo-(?:(?:Torso|Cames)(?:\b|\s)|(?:session|workout|weight|measure|food|listing|friend)-\d+$)/i;
+const LEGACY_SAMPLE_SUFFIX = /^(?:(?:session|workout|weight|measure|food|listing|friend)-\d+|Torso · força|Cames · volum)$/i;
+function isLegacySampleId(value: unknown, accountId: string) {
+  if (typeof value !== "string") return false;
+  const accountPrefix = `demo-${accountId}-`;
+  if (value.startsWith(accountPrefix) && LEGACY_SAMPLE_SUFFIX.test(value.slice(accountPrefix.length))) return true;
+  // Older fixed demo builds used the same fixture suffix without an account ID.
+  return accountId === "demo-local" && value.startsWith("demo-") && LEGACY_SAMPLE_SUFFIX.test(value.slice("demo-".length));
+}
 
 /** Removes only the known IDs and exact initial values produced by the previous sample-data seeder. */
 function removeLegacySamples(accountId: string) {
@@ -77,7 +79,7 @@ function removeLegacySamples(accountId: string) {
     const kept = value.filter(row => {
       if (!row || typeof row !== "object") return true;
       const record = row as { id?: unknown; workoutId?: unknown };
-      return !(typeof record.id === "string" && LEGACY_SAMPLE_ID.test(record.id)) && !(typeof record.workoutId === "string" && LEGACY_SAMPLE_ID.test(record.workoutId));
+      return !isLegacySampleId(record.id, accountId) && !isLegacySampleId(record.workoutId, accountId);
     });
     if (kept.length !== value.length) setJson(key, kept);
   }
@@ -116,9 +118,12 @@ function removeLegacySamples(accountId: string) {
 }
 
 function migrateLegacyDemoData(accountId: string) {
-  const marker = `tf_demo_clean_v2_${accountId}`;
+  const marker = `tf_demo_clean_v3_${accountId}`;
   if (localStorage.getItem(marker) === "1") return;
-  if (localStorage.getItem(`tf_demo_seeded_${accountId}`) === "1" || (accountId === "demo-local" && localStorage.getItem("tf_demo_seeded") === "1")) removeLegacySamples(accountId);
+  const hasOldSeedMarker = localStorage.getItem(`tf_demo_seeded_${accountId}`) === "1";
+  const hasPreviousCleanupMarker = localStorage.getItem(`tf_demo_clean_v2_${accountId}`) === "1";
+  const hasOldFixedDemoMarker = accountId === "demo-local" && localStorage.getItem("tf_demo_seeded") === "1";
+  if (hasOldSeedMarker || hasPreviousCleanupMarker || hasOldFixedDemoMarker) removeLegacySamples(accountId);
   localStorage.setItem(marker, "1");
 }
 
@@ -127,7 +132,7 @@ function cleanOldSharedMarketplace() {
   if (localStorage.getItem(marker) === "1") return;
   const key = "tf_demo_listings"; const listings = getJson(key);
   if (Array.isArray(listings)) {
-    const clean = listings.filter(item => !(typeof item?.id === "string" && LEGACY_SAMPLE_ID.test(item.id)));
+    const clean = listings.filter(item => !(typeof item?.id === "string" && /^demo-listing-\d+$/i.test(item.id)));
     if (clean.length !== listings.length) setJson(key, clean);
   }
   localStorage.setItem(marker, "1");
