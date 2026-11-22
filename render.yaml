@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: titanfit
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install && npm run build
+    startCommand: npm run server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DB_PATH
+        value: /var/data/titanfit.db
+      - key: BACKUP_DIR
+        value: /var/data/backups
+    disk:
+      name: titanfit-data
+      mountPath: /var/data
+      sizeGB: 1
