@@ -1,18 +1,22 @@
-import { exercises } from "./data";
-
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 const ACCOUNTS_KEY = "tf_demo_accounts_v1";
 const SESSION_KEY = "tf_demo_session_v1";
 const PBKDF2_ITERATIONS = 310_000;
+const PROFILE_DEFAULTS = { age: "", height: "", weight: "", experience: "Principiant", goal: "Millorar la forma", days: "3", gym: "" };
+const EMPTY_USER_DATA = (id: string): Record<string, unknown> => ({
+  [`tf_routines_${id}`]: [], [`tf_sessions_${id}`]: [], [`tf_weights_${id}`]: [], [`tf_measures_${id}`]: [],
+  [`tf_food_${id}`]: [], [`tf_profile_${id}`]: { ...PROFILE_DEFAULTS }, [`tf_calendar_${id}`]: {},
+  [`tf_challenges_${id}`]: [], [`tf_completed_challenges_${id}`]: [], [`tf_routine_starts_${id}`]: 0,
+  [`tf_recipe_favorites_${id}`]: [], [`tf_shopping_${id}`]: [], [`tf_fav_${id}`]: [], [`tf_messages_${id}`]: [],
+  [`tf_gym_favs_${id}`]: [], [`tf_demo_listings_${id}`]: [], [`tf_demo_friends_${id}`]: [],
+});
 
 export type DemoAccount = { id: string; name: string; email: string };
 type StoredAccount = DemoAccount & { salt: string; verifier: string; iterations: number };
 
 function accounts(): StoredAccount[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "[]");
-    return Array.isArray(value) ? value : [];
-  } catch { return []; }
+  try { const value = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "[]"); return Array.isArray(value) ? value : []; }
+  catch { return []; }
 }
 function encode(bytes: Uint8Array) { return btoa(String.fromCharCode(...bytes)); }
 function decode(value: string) { return Uint8Array.from(atob(value), char => char.charCodeAt(0)); }
@@ -23,15 +27,13 @@ async function derive(password: string, salt: Uint8Array, iterations: number) {
 
 export async function registerDemoAccount(name: string, email: string, password: string): Promise<DemoAccount> {
   if (!DEMO_MODE) throw new Error("El registre local només està disponible en mode demo.");
-  const cleanName = name.trim();
-  const cleanEmail = email.trim().toLowerCase();
+  const cleanName = name.trim(); const cleanEmail = email.trim().toLowerCase();
   if (cleanName.length < 2) throw new Error("Escriu un nom d'almenys dos caràcters.");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error("Introdueix un correu electrònic vàlid.");
   if (password.length < 8 || password.length > 256) throw new Error("La contrasenya ha de tenir entre 8 i 256 caràcters.");
   const existing = accounts();
   if (existing.some(account => account.email === cleanEmail)) throw new Error("Ja existeix un compte demo amb aquest correu en aquest navegador.");
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const verifier = await derive(password, salt, PBKDF2_ITERATIONS);
+  const salt = crypto.getRandomValues(new Uint8Array(16)); const verifier = await derive(password, salt, PBKDF2_ITERATIONS);
   const account: StoredAccount = { id: crypto.randomUUID(), name: cleanName, email: cleanEmail, salt: encode(salt), verifier: encode(verifier), iterations: PBKDF2_ITERATIONS };
   localStorage.setItem(ACCOUNTS_KEY, JSON.stringify([...existing, account]));
   return { id: account.id, name: account.name, email: account.email };
@@ -46,8 +48,7 @@ export async function loginDemoAccount(email: string, password: string): Promise
 }
 
 export function findDemoSession(): DemoAccount | null {
-  const id = localStorage.getItem(SESSION_KEY);
-  if (!id) return null;
+  const id = localStorage.getItem(SESSION_KEY); if (!id) return null;
   const account = accounts().find(item => item.id === id);
   return account ? { id: account.id, name: account.name, email: account.email } : null;
 }
@@ -56,47 +57,96 @@ export function clearDemoSession() { localStorage.removeItem(SESSION_KEY); }
 export function updateDemoAccountName(id: string, name: string) {
   localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts().map(account => account.id === id ? { ...account, name: name.trim() } : account)));
   const listingsKey = `tf_demo_listings_${id}`;
-  try {
-    const listings = JSON.parse(localStorage.getItem(listingsKey) || "[]");
-    if (Array.isArray(listings)) localStorage.setItem(listingsKey, JSON.stringify(listings.map(item => item?.owner === id ? { ...item, seller: name.trim() } : item)));
-  } catch { /* Keep malformed local listings untouched. */ }
+  try { const listings = JSON.parse(localStorage.getItem(listingsKey) || "[]"); if (Array.isArray(listings)) localStorage.setItem(listingsKey, JSON.stringify(listings.map(item => item?.owner === id ? { ...item, seller: name.trim() } : item))); }
+  catch { /* Keep malformed user listings untouched. */ }
 }
 
-function userKeys(id: string) {
-  return ["routines", "sessions", "weights", "measures", "food", "profile", "calendar", "challenges", "completed_challenges", "routine_starts", "recipe_favorites", "shopping", "fav", "messages", "gym_favs"].map(key => `tf_${key}_${id}`)
-    .concat([`tf_demo_listings_${id}`, `tf_demo_friends_${id}`, `tf_demo_seeded_${id}`]);
+function getJson(key: string): unknown {
+  try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
+}
+function setJson(key: string, value: unknown) { localStorage.setItem(key, JSON.stringify(value)); }
+const LEGACY_SAMPLE_ID = /^demo-(?:(?:Torso|Cames)(?:\b|\s)|(?:session|workout|weight|measure|food|listing|friend)-\d+$)/i;
+
+/** Removes only the known IDs and exact initial values produced by the previous sample-data seeder. */
+function removeLegacySamples(accountId: string) {
+  const prefixes = ["routines", "sessions", "weights", "measures", "food", "demo_listings", "demo_friends"];
+  for (const prefix of prefixes) {
+    const key = prefix.startsWith("demo_") ? `tf_${prefix}_${accountId}` : `tf_${prefix}_${accountId}`;
+    const value = getJson(key);
+    if (!Array.isArray(value)) continue;
+    const kept = value.filter(row => {
+      if (!row || typeof row !== "object") return true;
+      const record = row as { id?: unknown; workoutId?: unknown };
+      return !(typeof record.id === "string" && LEGACY_SAMPLE_ID.test(record.id)) && !(typeof record.workoutId === "string" && LEGACY_SAMPLE_ID.test(record.workoutId));
+    });
+    if (kept.length !== value.length) setJson(key, kept);
+  }
+
+  const profileKey = `tf_profile_${accountId}`; const profile = getJson(profileKey);
+  const legacyProfile = { age: "24", height: "178", weight: "74.1", experience: "Intermedi", goal: "Guanyar força", days: "4", gym: "Titan Gym" };
+  if (profile && typeof profile === "object" && !Array.isArray(profile)) {
+    const kept = { ...(profile as Record<string, unknown>) };
+    for (const [field, seeded] of Object.entries(legacyProfile)) if (kept[field] === seeded) delete kept[field];
+    setJson(profileKey, { ...PROFILE_DEFAULTS, ...kept });
+  }
+
+  const calendarKey = `tf_calendar_${accountId}`; const calendar = getJson(calendarKey);
+  if (calendar && typeof calendar === "object" && !Array.isArray(calendar)) {
+    const entries = Object.entries(calendar as Record<string, unknown>);
+    const dated = entries.map(([date, value]) => ({ time: Date.parse(`${date}T00:00:00Z`), value }));
+    const isOldSeed = entries.length === 2 && dated.every(entry => Number.isFinite(entry.time)) &&
+      new Set(dated.map(entry => entry.value)).size === 2 && dated.some(entry => entry.value === "Torso") && dated.some(entry => entry.value === "Cames") && Math.abs(dated[0].time - dated[1].time) === 86400000;
+    if (isOldSeed) setJson(calendarKey, {});
+  }
+
+  const challengesKey = `tf_challenges_${accountId}`; const challenges = getJson(challengesKey);
+  if (Array.isArray(challenges)) {
+    const kept = [...challenges];
+    for (const seededId of ["3-week", "10-sessions"]) { const index = kept.findIndex(item => item?.id === seededId); if (index >= 0) kept.splice(index, 1); }
+    setJson(challengesKey, kept);
+  }
+  const startsKey = `tf_routine_starts_${accountId}`; const starts = getJson(startsKey);
+  if (starts === 8) setJson(startsKey, 0); else if (typeof starts === "number" && starts > 8) setJson(startsKey, starts - 8);
+  const shoppingKey = `tf_shopping_${accountId}`; const shopping = getJson(shoppingKey);
+  if (Array.isArray(shopping)) {
+    const kept = [...shopping];
+    for (const seededItem of ["Civada", "Fruita", "Pit de pollastre"]) { const index = kept.indexOf(seededItem); if (index >= 0) kept.splice(index, 1); }
+    setJson(shoppingKey, kept);
+  }
 }
 
-/** Seeds only newly created accounts and never replaces a user's existing values. */
+function migrateLegacyDemoData(accountId: string) {
+  const marker = `tf_demo_clean_v2_${accountId}`;
+  if (localStorage.getItem(marker) === "1") return;
+  if (localStorage.getItem(`tf_demo_seeded_${accountId}`) === "1" || (accountId === "demo-local" && localStorage.getItem("tf_demo_seeded") === "1")) removeLegacySamples(accountId);
+  localStorage.setItem(marker, "1");
+}
+
+function cleanOldSharedMarketplace() {
+  const marker = "tf_demo_clean_shared_market_v1";
+  if (localStorage.getItem(marker) === "1") return;
+  const key = "tf_demo_listings"; const listings = getJson(key);
+  if (Array.isArray(listings)) {
+    const clean = listings.filter(item => !(typeof item?.id === "string" && LEGACY_SAMPLE_ID.test(item.id)));
+    if (clean.length !== listings.length) setJson(key, clean);
+  }
+  localStorage.setItem(marker, "1");
+}
+
+/** New accounts get neutral, empty records; existing values are never overwritten. */
 export function initializeDemoAccount(account: DemoAccount) {
   if (!DEMO_MODE) return;
-  const seedKey = `tf_demo_seeded_${account.id}`;
-  if (localStorage.getItem(seedKey) === "1") return;
-  const id = (name: string) => `demo-${account.id}-${name}`;
-  const exercise = (index: number, kg: number) => ({ exercise: exercises[index % exercises.length].name, exerciseName: exercises[index % exercises.length].name, sets: 3, reps: 10, targetReps: 10, kg, targetWeight: kg, rest: 90, restSeconds: 90 });
-  const routine = (name: string, indices: number[], kg: number) => ({ id: id(name), userId: account.id, name, description: "Pla de força i tècnica", days: ["Dl", "Dj"], trainingDays: ["Dl", "Dj"], createdAt: new Date().toISOString(), items: indices.map((n, i) => exercise(n, kg + i * 5)) });
-  const past = (days: number) => new Date(Date.now() - days * 86400000).toISOString();
-  const sessions = [0, 2, 4, 7, 9, 12].map((days, i) => ({ id: id(`session-${i}`), workoutId: id(`workout-${i}`), exercise: exercises[i % exercises.length].name, date: past(days), duration: 45 + i, sets: [{ kg: 35 + i * 2, reps: 10, done: true }, { kg: 40 + i * 2, reps: 8, done: true }, { kg: 42 + i * 2, reps: 8, done: true }] }));
-  const values: Record<string, unknown> = {
-    [`tf_routines_${account.id}`]: [routine("Torso · força", [0, 2, 4], 35), routine("Cames · volum", [5, 7, 9], 45)],
-    [`tf_sessions_${account.id}`]: sessions,
-    [`tf_weights_${account.id}`]: [75.8, 75.2, 74.9, 74.4, 74.1].map((weight, i) => ({ id: id(`weight-${i}`), date: past((4 - i) * 7), weight })),
-    [`tf_measures_${account.id}`]: [{ id: id("measure-1"), date: past(14), waist: "82", chest: "98", arm: "34", thigh: "56", calves: "37" }, { id: id("measure-2"), date: past(2), waist: "80", chest: "99", arm: "35", thigh: "57", calves: "37" }],
-    [`tf_food_${account.id}`]: [{ id: id("food-1"), date: new Date().toISOString().slice(0, 10), name: "Civada i iogurt", grams: 100, cal: 145, protein: 8, carbs: 19, fat: 4 }, { id: id("food-2"), date: new Date().toISOString().slice(0, 10), name: "Pit de pollastre", grams: 180, cal: 165, protein: 31, carbs: 0, fat: 4 }],
-    [`tf_profile_${account.id}`]: { age: "24", height: "178", weight: "74.1", experience: "Intermedi", goal: "Guanyar força", days: "4", gym: "Titan Gym" },
-    [`tf_calendar_${account.id}`]: { [new Date().toISOString().slice(0, 10)]: "Torso", [new Date(Date.now() + 86400000).toISOString().slice(0, 10)]: "Cames" },
-    [`tf_challenges_${account.id}`]: [{ id: "3-week" }, { id: "10-sessions" }], [`tf_completed_challenges_${account.id}`]: [], [`tf_routine_starts_${account.id}`]: 8,
-    [`tf_recipe_favorites_${account.id}`]: [], [`tf_shopping_${account.id}`]: ["Civada", "Fruita", "Pit de pollastre"], [`tf_fav_${account.id}`]: [], [`tf_messages_${account.id}`]: [], [`tf_gym_favs_${account.id}`]: [],
-    [`tf_demo_listings_${account.id}`]: [{ id: id("listing-1"), owner: account.id, seller: account.name, name: "Mancuernas ajustables", price: 65, category: "Equipament", state: "Usat", status: "Disponible", location: "Barcelona", description: "Parell en bon estat, ideal per entrenar a casa.", brand: "Titan", delivery: "Recollida" }, { id: id("listing-2"), owner: id("sample-seller"), seller: "Marta R.", name: "Cinturó de halterofília", price: 28, category: "Accessoris", state: "Nou", status: "Disponible", location: "Sant Boi", description: "Cinturó de suport lumbar, talla M." }],
-    [`tf_demo_friends_${account.id}`]: [{ id: id("friend-1"), name: "Júlia Demo", status: "Amics", direction: "incoming" }, { id: id("friend-2"), name: "Marc Demo", status: "Pendent", direction: "incoming" }],
-  };
-  Object.entries(values).forEach(([key, value]) => { if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(value)); });
-  localStorage.setItem(seedKey, "1");
+  migrateLegacyDemoData(account.id);
+  migrateLegacyDemoData("demo-local");
+  cleanOldSharedMarketplace();
+  for (const [key, value] of Object.entries(EMPTY_USER_DATA(account.id))) if (localStorage.getItem(key) === null) setJson(key, value);
+  localStorage.setItem(`tf_demo_seeded_${account.id}`, "empty-v2");
 }
 
-/** Resets the current profile's demo data while preserving all local accounts. */
+/** Clears the selected account's personal data but keeps its credentials/session and all other accounts. */
 export function resetDemoAccountData(account: DemoAccount) {
-  userKeys(account.id).forEach(key => localStorage.removeItem(key));
+  for (const key of Object.keys(EMPTY_USER_DATA(account.id))) localStorage.removeItem(key);
+  localStorage.removeItem(`tf_demo_seeded_${account.id}`);
   initializeDemoAccount(account);
 }
 

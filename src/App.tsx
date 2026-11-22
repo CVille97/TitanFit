@@ -494,7 +494,7 @@ function Recipes({account,notify,date}:{account:Account;notify:(message:string)=
 }
 
 function ShoppingList({account}:{account:Account}){
-  const [list,setList]=useState<string[]>(()=>read(`tf_shopping_${account.id}`,["Avena","Fruita","Ou","Arròs","Verdures"]));
+  const [list,setList]=useState<string[]>(()=>read(`tf_shopping_${account.id}`,DEMO_MODE?[]:["Avena","Fruita","Ou","Arròs","Verdures"]));
   const [text,setText]=useState("");
   function update(next:string[]){setList(next);write(`tf_shopping_${account.id}`,next);}
   return <section className="panel shopping"><div className="panel-title"><div><span className="eyebrow">LLISTA PERSONAL</span><h3>Comprar</h3></div></div><div className="add-inline"><input value={text} onChange={e=>setText(e.target.value)} placeholder="Afegir ingredient"/><button className="primary" onClick={()=>{if(text.trim()){update([...list,text.trim()]);setText("");}}}>Afegir</button></div>{list.map((item,i)=><label className="check-row" key={i}><input type="checkbox"/><span>{item}</span><button onClick={()=>update(list.filter((_,n)=>n!==i))}>×</button></label>)}</section>;
