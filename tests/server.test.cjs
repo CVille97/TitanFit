@@ -3,12 +3,14 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
 const { once } = require("node:events");
 const { test } = require("node:test");
 const { createApp } = require("../server.cjs");
 
 async function startServer(dbPath, legacyUsersFile = null) {
-  const app = createApp({ dbPath, legacyUsersFile, staticFiles: false });
+  const app = await createApp({ dbPath, legacyUsersFile, staticFiles: false });
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -22,7 +24,7 @@ async function startServer(dbPath, legacyUsersFile = null) {
       closed = true;
       server.closeAllConnections();
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-      app.locals.db.close();
+      await app.locals.db.close();
     },
   };
 }
@@ -63,10 +65,71 @@ function temporaryDirectory(t) {
   const servers = [];
   t.after(async () => {
     for (const server of servers) await server.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    try {
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 });
+    } catch (error) {
+      if (error.code !== "EBUSY") throw error;
+      t.diagnostic("Windows kept a temporary libSQL test database locked after client.close; the isolated temp directory was left for OS cleanup.");
+    }
   });
   return { directory, servers };
 }
+
+test("async libSQL adapter executes local SQLite transactions and rolls back failures", async (t) => {
+  const { directory, servers } = temporaryDirectory(t);
+  const server = await startServer(path.join(directory, "titanfit.db"));
+  servers.push(server);
+  const db = server.app.locals.db;
+  assert.equal(db.local, true);
+  await assert.rejects(db.transaction(async () => {
+    await db.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)")
+      .run("rollback-check", "must-not-persist", new Date().toISOString());
+    throw new Error("force transaction rollback");
+  }), /force transaction rollback/);
+  assert.equal(await db.prepare("SELECT value FROM app_meta WHERE key = ?").get("rollback-check"), null);
+  const health = await jsonRequest(server, "/api/health");
+  assert.equal(health.response.status, 200);
+  assert.deepEqual(health.result, { ok: true });
+});
+
+test("Turso migration tool dry-runs, transfers a test fixture, and refuses a second overwrite", async (t) => {
+  const { directory, servers } = temporaryDirectory(t);
+  const sourcePath = path.join(directory, "source.db");
+  const remotePath = path.join(directory, "remote.db");
+  const server = await startServer(sourcePath);
+  servers.push(server);
+  const account = await register(server, "migration-fixture@example.test");
+  const localHash = (await server.app.locals.db.prepare("SELECT password_hash FROM users WHERE id = ?").get(account.user.id)).password_hash;
+  await server.close();
+
+  const env = {
+    ...process.env,
+    DB_PATH: sourcePath,
+    TURSO_DATABASE_URL: pathToFileURL(remotePath).href,
+    TURSO_AUTH_TOKEN: "fixture-only-not-a-real-token",
+  };
+  const script = path.join(__dirname, "..", "scripts", "migrate-to-turso.cjs");
+  const dryRun = spawnSync(process.execPath, [script], { cwd: path.dirname(script), env, encoding: "utf8" });
+  assert.equal(dryRun.status, 0, dryRun.stderr);
+  assert.match(dryRun.stdout, /Dry run only/);
+
+  const migration = spawnSync(process.execPath, [script, "--apply", "--confirm-empty-remote"], { cwd: path.dirname(script), env, encoding: "utf8" });
+  assert.equal(migration.status, 0, migration.stderr);
+  assert.match(migration.stdout, /Migration and remote integrity verification completed/);
+
+  const { createClient } = require("@libsql/client");
+  const remote = createClient({ url: pathToFileURL(remotePath).href, concurrency: 1 });
+  try {
+    const migratedHash = await remote.execute({ sql: "SELECT password_hash FROM users WHERE id = ?", args: [account.user.id] });
+    assert.equal(migratedHash.rows[0].password_hash, localHash);
+  } finally {
+    await remote.close();
+  }
+
+  const secondApply = spawnSync(process.execPath, [script, "--apply", "--confirm-empty-remote"], { cwd: path.dirname(script), env, encoding: "utf8" });
+  assert.notEqual(secondApply.status, 0);
+  assert.match(secondApply.stderr, /is not empty/);
+});
 
 test("registered account and fitness data survive a backend restart", async (t) => {
   const { directory, servers } = temporaryDirectory(t);
@@ -123,14 +186,14 @@ test("registered account and fitness data survive a backend restart", async (t) 
     });
     assert.equal(saved.response.status, 200);
   }
-  assert.equal(firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM training_sessions WHERE user_id = ?").get(account.user.id).count, 1);
-  assert.equal(firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM performed_exercises WHERE user_id = ?").get(account.user.id).count, 2);
-  assert.equal(firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM workout_sets WHERE user_id = ?").get(account.user.id).count, 3);
-  assert.equal(firstServer.app.locals.db.prepare("SELECT weight_kg FROM body_weights WHERE user_id = ?").get(account.user.id).weight_kg, 70);
-  assert.equal(firstServer.app.locals.db.prepare("SELECT waist_cm FROM body_measurements WHERE user_id = ?").get(account.user.id).waist_cm, 82);
-  assert.equal(firstServer.app.locals.db.prepare("SELECT consumed_at FROM nutrition_entries WHERE user_id = ?").get(account.user.id).consumed_at, "2026-05-09");
-  assert.equal(firstServer.app.locals.db.prepare("SELECT value FROM app_config WHERE user_id = ? AND config_key = 'profile'").get(account.user.id).value, JSON.stringify(profile));
-  assert.equal(firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM routines WHERE user_id = ?").get(account.user.id).count, 1);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM training_sessions WHERE user_id = ?").get(account.user.id)).count, 1);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM performed_exercises WHERE user_id = ?").get(account.user.id)).count, 2);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM workout_sets WHERE user_id = ?").get(account.user.id)).count, 3);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT weight_kg FROM body_weights WHERE user_id = ?").get(account.user.id)).weight_kg, 70);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT waist_cm FROM body_measurements WHERE user_id = ?").get(account.user.id)).waist_cm, 82);
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT consumed_at FROM nutrition_entries WHERE user_id = ?").get(account.user.id)).consumed_at, "2026-05-09");
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT value FROM app_config WHERE user_id = ? AND config_key = 'profile'").get(account.user.id)).value, JSON.stringify(profile));
+  assert.equal((await firstServer.app.locals.db.prepare("SELECT COUNT(*) AS count FROM routines WHERE user_id = ?").get(account.user.id)).count, 1);
 
   const secondDevice = await jsonRequest(firstServer, "/api/login", {
     method: "POST",
@@ -225,7 +288,7 @@ test("private data is isolated while published listings are shared and owner-pro
   });
   assert.equal(edited.response.status, 200);
   assert.equal(edited.result.listings[0].name, "Barra editada");
-  assert.equal(server.app.locals.db.prepare("SELECT image_data FROM listing_images WHERE listing_id = ?").get(listing.id).image_data, "data:image/png;base64,AA==");
+  assert.equal((await server.app.locals.db.prepare("SELECT image_data FROM listing_images WHERE listing_id = ?").get(listing.id)).image_data, "data:image/png;base64,AA==");
   const deleted = await jsonRequest(server, "/api/listings", {
     cookie: first.cookie,
     method: "PUT",
@@ -257,7 +320,7 @@ test("legacy password hashes are migrated and upgraded after login", async (t) =
   });
   assert.equal(login.response.status, 200);
   assert.equal(login.result.user.id, "legacy-user");
-  const hash = server.app.locals.db.prepare("SELECT password_hash FROM users WHERE id = ?").get("legacy-user").password_hash;
+  const hash = (await server.app.locals.db.prepare("SELECT password_hash FROM users WHERE id = ?").get("legacy-user")).password_hash;
   assert.ok(hash.startsWith("scrypt$"));
   const deleted = await jsonRequest(server, "/api/delete-account", { cookie: login.cookie, method: "POST" });
   assert.equal(deleted.response.status, 200);
@@ -294,7 +357,7 @@ test("friend requests are stored in SQLite and support accept and remove", async
   assert.deepEqual(search.result.users, [{ id: second.user.id, name: second.user.name }]);
   const request = await jsonRequest(server, `/api/friends/${second.user.id}`, { cookie: first.cookie, method: "POST" });
   assert.equal(request.response.status, 200);
-  assert.equal(server.app.locals.db.prepare("SELECT status FROM friendships WHERE requester_user_id = ? AND addressee_user_id = ?").get(first.user.id, second.user.id).status, "pending");
+  assert.equal((await server.app.locals.db.prepare("SELECT status FROM friendships WHERE requester_user_id = ? AND addressee_user_id = ?").get(first.user.id, second.user.id)).status, "pending");
   const incoming = await jsonRequest(server, "/api/friends", { cookie: second.cookie });
   assert.deepEqual(incoming.result.friends, [{ id: first.user.id, name: first.user.name, status: "Pendent", direction: "incoming" }]);
   const accepted = await jsonRequest(server, `/api/friends/${first.user.id}`, { cookie: second.cookie, method: "POST" });
@@ -303,7 +366,7 @@ test("friend requests are stored in SQLite and support accept and remove", async
   assert.deepEqual(outgoing.result.friends, [{ id: second.user.id, name: second.user.name, status: "Amics", direction: "outgoing" }]);
   const removed = await jsonRequest(server, `/api/friends/${second.user.id}`, { cookie: first.cookie, method: "DELETE" });
   assert.equal(removed.response.status, 200);
-  assert.equal(server.app.locals.db.prepare("SELECT COUNT(*) AS count FROM friendships").get().count, 0);
+  assert.equal((await server.app.locals.db.prepare("SELECT COUNT(*) AS count FROM friendships").get()).count, 0);
 });
 
 test("authentication limits repeated attempts and rejects oversized login passwords", async (t) => {

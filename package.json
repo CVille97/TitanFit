@@ -11,9 +11,11 @@
     "start": "npm run build && npm run server",
     "test:server": "node --test tests/server.test.cjs",
     "test:e2e": "node tests/e2e.test.cjs",
-    "backup": "node scripts/backup.cjs"
+    "backup": "node scripts/backup.cjs",
+    "migrate:turso": "node scripts/migrate-to-turso.cjs"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "express": "^5.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

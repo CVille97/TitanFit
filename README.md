@@ -5,56 +5,43 @@ Aplicació fitness amb React, TypeScript, Vite, Express i SQLite. La interfície
 ## Arquitectura i dades
 
 - **Frontend:** React 19, TypeScript i Vite.
-- **Backend:** Express 5 sobre Node.js 22.16 o superior. S'utilitza el mòdul `node:sqlite` inclòs amb Node; en algunes versions mostra un avís d'API experimental.
-- **Autenticació:** contrasenyes noves amb scrypt, sessions aleatòries guardades com a hash a SQLite i cookies `HttpOnly`, `SameSite=Lax`; en `NODE_ENV=production` també s'afegeix `Secure`. Les sessions duren 14 dies.
-- **Base de dades:** `server-data/titanfit.db` per defecte. `DB_PATH` permet indicar una altra ruta. Foreign keys i WAL estan activats. La base de dades no es desa a `dist`.
-- **Dades personals:** rutines, exercicis de les rutines, entrenaments i sèries, pesos, mesures, perfil, preferits, calendari, nutrició, reptes i altres llistes de l'aplicació. Les dades s'aïllen per l'usuari de la cookie; no s'accepta un `userId` del navegador per concedir accés.
-- **Marketplace:** els anuncis es comparteixen entre comptes i només el propietari autenticat pot canviar o eliminar els seus. Els favorits són privats.
+- **Backend:** Express 5 i Node.js 22.16 o superior. Les consultes passen per una capa asíncrona basada en @libsql/client.
+- **Autenticació:** contrasenyes amb scrypt, sessions aleatòries persistides com a hash i cookies HttpOnly, SameSite=Lax; en producció també Secure. Les sessions duren 14 dies.
+- **Base de dades:** sense Turso, localment utilitza server-data/titanfit.db (o DB_PATH). Amb TURSO_DATABASE_URL i TURSO_AUTH_TOKEN, connecta a Turso.
+- **Dades personals:** rutines, entrenaments i sèries, mesures, perfil, nutrició, amistats, reptes i llistes s'aïllen pel compte de la sessió.
+- **Marketplace:** els anuncis són compartits, les accions de propietari estan protegides i les fotos s'emmagatzemen a SQLite/Turso.
 
-Durant el primer inici del backend, els comptes de `server-data/users.json` s'importen a SQLite sense copiar contrasenyes en text pla. En iniciar sessió, les dades locals de l'usuari s'importen de manera idempotent i es conserven sota les claus `tf_migration_backup_*`; les dades que ja existeixin al servidor tenen prioritat.
+La importació de server-data/users.json s'executa només en el mode SQLite local. La migració cap a Turso és una operació explícita i independent.
 
 ## Desenvolupament local
 
-Requereix Node.js 22.16 o superior. Instal·la les dependències i inicia **dues terminals**:
+Requereix Node.js 22.16 o superior. Instal·la les dependències i inicia dues terminals:
 
-```sh
 npm install
 npm run server
-```
 
-```sh
+En una segona terminal, inicia Vite:
+
 npm run dev
-```
 
-El backend escolta a `http://localhost:4174`; Vite serveix la interfície i envia `/api` al backend. La base de dades local queda a `server-data/titanfit.db`. Per compilar i provar:
+El backend escolta a http://localhost:4174; Vite serveix la interfície i envia /api al backend. Per compilar i provar executa npm run build, npm run test:server i npm run test:e2e (requereix Chrome o Chromium).
 
-```sh
-npm run build
-npm run test:server
-npm run test:e2e  # requereix Chrome o Chromium
-```
-
-Per servir la compilació amb Express:
-
-```sh
-npm start
-```
-
-El port per defecte és `4174`; el proveïdor pot assignar-ne un de diferent mitjançant `PORT`.
+npm start compila i inicia Express servint el frontend de dist.
 
 ## Variables d'entorn
 
 | Variable | Ús |
 | --- | --- |
-| `PORT` | Port HTTP del servidor (per defecte `4174`). |
-| `HOST` | Interfície d'escolta (per defecte `0.0.0.0`). |
-| `TRUST_PROXY` | Estableix `1` només si el servidor està darrere d'un proxy invers de confiança; permet aplicar els límits d'inici de sessió a la IP real del client. |
-| `DB_PATH` | Ruta absoluta de `titanfit.db`; per exemple `C:\dades\titanfit.db` en Windows o `/data/titanfit.db` en un allotjament amb disc persistent. |
-| `NODE_ENV` | Estableix `production` en producció per activar l'atribut `Secure` de les cookies. |
-| `BACKUP_DIR` | Ruta opcional per desar còpies de seguretat. |
+| PORT | Port HTTP (4174 per defecte). Render el proporciona automàticament. |
+| HOST | Interfície d'escolta (0.0.0.0 per defecte). |
+| TRUST_PROXY | Estableix 1 només darrere d'un proxy de confiança, com Render. |
+| DB_PATH | Ruta de la base SQLite local; per defecte server-data/titanfit.db. |
+| TURSO_DATABASE_URL | URL Turso (libsql://...). Si no existeix, s'utilitza SQLite local. |
+| TURSO_AUTH_TOKEN | Secret obligatori amb la URL Turso; no s'inclou al frontend. |
+| NODE_ENV | En production activa la cookie segura Secure. |
+| BACKUP_DIR | Carpeta per a còpies locals fetes amb npm run backup; no fa còpies remotes de Turso. |
 
-No hi ha claus d'API al frontend. La recuperació de contrasenya per correu no està activada perquè encara falta configurar un proveïdor de correu.
-
+No hi ha credencials al frontend. La recuperació de contrasenya per correu encara no està configurada.
 ## Còpies de seguretat
 
 Executa:
@@ -67,27 +54,26 @@ Es crea una còpia coherent de SQLite a `server-data/backups` (o a `BACKUP_DIR`)
 
 ## Publicació
 
-La publicació requereix un allotjament Node.js que permeti mantenir un directori de dades persistent:
+Render serveix el frontend compilat i l'API Express al mateix origen. Les dades persistents s'emmagatzemen a Turso, no al sistema de fitxers efímer de Render.
 
-1. Compila amb `npm run build`.
-2. Executa `npm run server` i configura `PORT`, `NODE_ENV=production` i `DB_PATH` cap a un volum persistent fora del directori públic; per exemple `/data/titanfit.db`.
-3. Publica el frontend i l'API sota el **mateix origen HTTPS**. El servidor Express serveix `dist`; evita posar el frontend en un domini diferent sense dissenyar explícitament CORS i protecció CSRF.
-4. Configura còpies de seguretat externes i un health check a `/api/health`.
+### Crear Turso i migrar la base local
 
-SQLite és adequat per a una instància de backend amb un disc persistent. No és una solució de producció vàlida si el proveïdor esborra el disc en reiniciar, desplega diverses instàncies independents o necessita escalat horitzontal. En aquests casos cal migrar l'emmagatzematge a PostgreSQL gestionat abans del desplegament; aquesta migració i la configuració del proveïdor encara no estan incloses.
+1. Autentica el CLI amb turso auth login, crea una base buida amb turso db create titanfit, consulta la URL amb turso db show titanfit i crea un token amb turso db tokens create titanfit. Consulta el [CLI oficial de Turso](https://github.com/tursodatabase/turso-cli) i el [quickstart](https://github.com/tursodatabase/turso-docs/blob/main/quickstart.mdx).
+2. Atura el servidor local per obtenir una còpia consistent. Conserva server-data/titanfit.db i fes una còpia privada fora del repositori.
+3. A PowerShell, assigna DB_PATH, TURSO_DATABASE_URL i TURSO_AUTH_TOKEN com a variables només per a la sessió local; no les desis al codi ni a Git.
+4. Executa primer npm run migrate:turso. El dry-run comprova la integritat SQLite, l'esquema, els índexs i que el destí no contingui dades. No escriu a Turso.
+5. Només després de revisar l'informe, inicia la transferència explícitament amb npm run migrate:turso -- --apply --confirm-empty-remote. El procés copia totes les taules, files i fotos, verifica els recomptes i la integritat, i no modifica el fitxer local.
 
-### Render
+La migració rebutja taules remotes amb dades o esquemes incompatibles. Si s'interromp després d'escriure dades, no es pot repetir sobre aquell destí poblat: conserva l'origen i prepara un altre destí buit. Les files de sessió es copien, però els usuaris hauran d'iniciar sessió al domini nou perquè les cookies locals no s'hi envien.
 
-El fitxer `render.yaml` prepara un servei web a Frankfurt amb els comandos de compilació i inici, el health check i un disc persistent de 1 GB muntat a `/var/data`. El pla Starter és necessari perquè Render ofereix discos persistents en serveis de pagament. El servei fixa Node.js 22.22.0, compatible amb `node:sqlite`; `.node-version` manté la mateixa versió localment. Revisa el pla, la regió i la mida del disc al Blueprint abans de crear el servei.
+### Connectar Render
 
-Render proporciona `PORT`; no cal definir-lo manualment. El Blueprint estableix `NODE_ENV=production`, `HOST=0.0.0.0`, `TRUST_PROXY=1`, `DB_PATH=/var/data/titanfit.db` i `BACKUP_DIR=/var/data/backups`. Express serveix `dist` directament, de manera que el servei no necessita Vite en temps d'execució. Les fotografies del Marketplace estan guardades com a dades SQLite i queden al mateix disc que la base de dades.
+El render.yaml configura pla Free, Node.js 22.22.0, npm install && npm run build, npm run server, /api/health, HOST=0.0.0.0 i TRUST_PROXY=1. En crear el servei, introdueix TURSO_DATABASE_URL i TURSO_AUTH_TOKEN com a secrets. En serveis existents, afegeix les variables manualment perquè Render només sol·licita les marcades sync: false durant la creació inicial ([referència de Blueprints](https://render.com/docs/blueprint-spec)).
 
-No despleguis amb la base de dades local inclosa al repositori. Si cal conservar comptes antics de `server-data/users.json`, planifica'n la importació al disc abans de donar accés públic; aquesta còpia està exclosa de Git i Render no la rep en un desplegament normal.
-
+Els serveis Render Free s'aturen per inactivitat i tenen disc efímer; Turso és per això el magatzem persistent ([límits oficials](https://render.com/docs/free)). No s'ha fet cap desplegament ni s'ha connectat cap compte Turso real.
 ## Integracions i límits pendents
 
-- No s'ha configurat cap proveïdor d'allotjament, domini, HTTPS ni disc persistent. La sincronització entre dispositius només funcionarà quan aquest backend estigui publicat i accessible; la base de dades del desenvolupador no és accessible des d'altres xarxes.
-- Les amistats s'envien entre comptes reals i es guarden en SQLite. El progrés dels reptes és personal i deriva dels entrenaments. Els missatges del mercat encara no s'envien al venedor; es guarden com a notes personals.
-- Les imatges dels anuncis es guarden actualment amb el registre SQLite. Firebase Storage o un emmagatzematge d'objectes encara no està configurat.
-- La recuperació de contrasenya no envia correus; necessita un servei de correu verificat.
-- Catàleg d'exercicis, receptes, gimnasos i estimacions d'afluència són dades públiques de l'aplicació, no registres personals ni ocupació en temps real.
+- Encara falten el compte/base de dades Turso reals, els secrets de Render, la migració real després de revisar el dry-run i el desplegament.
+- El progrés dels reptes és personal i deriva dels entrenaments. Els missatges del Marketplace encara no s'envien al venedor; es guarden com a notes personals.
+- La recuperació de contrasenya per correu necessita un proveïdor de correu verificat.
+- El catàleg d'exercicis, receptes, gimnasos i estimacions d'afluència són dades públiques de l'aplicació, no ocupació en temps real.

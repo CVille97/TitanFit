@@ -2,7 +2,7 @@ services:
   - type: web
     name: titanfit
     runtime: node
-    plan: starter
+    plan: free
     region: frankfurt
     buildCommand: npm install && npm run build
     startCommand: npm run server
@@ -16,11 +16,7 @@ services:
         value: 0.0.0.0
       - key: TRUST_PROXY
         value: "1"
-      - key: DB_PATH
-        value: /var/data/titanfit.db
-      - key: BACKUP_DIR
-        value: /var/data/backups
-    disk:
-      name: titanfit-data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
