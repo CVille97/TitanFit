@@ -1,5 +1,6 @@
 type AccountIdentity = { id: string };
 type WriteResponse = { ok: boolean };
+import { DEMO_MODE } from "./demo";
 
 let activeUserId: string | null = null;
 const pendingWrites = new Map<string, Promise<unknown>>();
@@ -33,6 +34,7 @@ function parseLocalListings(userId: string): unknown[] {
 }
 
 export async function activateCloudAccount(account: AccountIdentity): Promise<void> {
+  if (DEMO_MODE) { activeUserId = account.id; return; }
   activeUserId = null;
   const localEntries: Record<string, unknown> = {};
   const localListingsToImport = parseLocalListings(account.id);
@@ -78,6 +80,7 @@ export async function activateCloudAccount(account: AccountIdentity): Promise<vo
 }
 
 export function deactivateCloudAccount(): void {
+  if (DEMO_MODE) { activeUserId = null; return; }
   activeUserId = null;
   localStorage.removeItem("tf_token");
 }
@@ -118,19 +121,21 @@ export function write<T>(key: string, value: T): boolean {
   } catch {
     return false;
   }
-  if (key === "tf_listings" || (activeUserId && isOwnedDataKey(key, activeUserId))) {
+  if (!DEMO_MODE && (key === "tf_listings" || (activeUserId && isOwnedDataKey(key, activeUserId)))) {
     scheduleWrite(key, value);
   }
   return true;
 }
 
 export async function confirmCloudWrite(key: string): Promise<void> {
+  if (DEMO_MODE) return;
   if (!activeUserId) throw new Error("No hi ha una sessió remota activa.");
   const pending = pendingWrites.get(key);
   if (pending) await pending;
 }
 
 export async function confirmPendingCloudWrites(): Promise<void> {
+  if (DEMO_MODE) return;
   await Promise.all([...pendingWrites.values()]);
 }
 

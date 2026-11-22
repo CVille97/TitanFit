@@ -20,6 +20,11 @@ server-data/backups/
 *.p12
 *.pfx
 .npmrc
+*.token
+*.secret
+credentials.json
+secrets/
+.secrets/
 
 # Base de datos local y datos privados
 server-data/

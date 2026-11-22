@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { exercises, type Exercise } from "./data";
 import { activateCloudAccount, confirmCloudWrite, confirmPendingCloudWrites, deactivateCloudAccount, read, write } from "./persistence";
+import { DEMO_ACCOUNT, DEMO_MODE, demoFriends, initializeDemo, saveDemoFriends } from "./demo";
 
 type Section = "inici" | "entrenar" | "progres" | "nutricio" | "mercat" | "gimnasos" | "calendari" | "social" | "perfil";
 type Account = { id: string; name: string; email: string };
@@ -63,6 +64,13 @@ export default function App() {
   const [mobilePreview,setMobilePreview]=useState(false);
 
   useEffect(() => {
+    if (DEMO_MODE) {
+      initializeDemo();
+      void activateCloudAccount(DEMO_ACCOUNT);
+      try { setCurrent(JSON.parse(localStorage.getItem("tf_demo_account") || "null") || DEMO_ACCOUNT); } catch { setCurrent(DEMO_ACCOUNT); }
+      setCheckingSession(false);
+      return;
+    }
     let cancelled = false;
     fetch("/api/me", { credentials: "same-origin" })
       .then(async response => {
@@ -86,7 +94,7 @@ export default function App() {
   },[]);
   function notify(message: string) {
     const show = (value: string) => {
-      setNotice(value);
+      setNotice(DEMO_MODE ? value.replaceAll("al servidor", "en aquest navegador").replaceAll("del servidor", "d'aquest navegador").replaceAll("servidor", "navegador") : value);
       window.setTimeout(() => setNotice(""), 2600);
     };
     void confirmPendingCloudWrites()
@@ -104,6 +112,7 @@ export default function App() {
   }, []);
 
   async function logout() {
+    if (DEMO_MODE) { notify("La demostració continua activa en aquest navegador."); return; }
     try {
       await confirmPendingCloudWrites();
       const response = await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
@@ -117,6 +126,7 @@ export default function App() {
   }
 
   async function authenticate(event: React.FormEvent<HTMLFormElement>) {
+    if (DEMO_MODE) { event.preventDefault(); return; }
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const email = String(data.get("email")).trim().toLowerCase();
@@ -179,7 +189,8 @@ export default function App() {
         <button className="profile-nav" onClick={() => setSection("perfil")}><span className="avatar">{current.name.slice(0, 1).toUpperCase()}</span><span><strong>{current.name}</strong><small>Perfil privat</small></span></button>
       </aside>
       <main className="main">
-        <header className="topbar"><div><small>{today()}</small><strong>{sectionTitle(section)}</strong></div><div className="topbar-actions"><button className="mobile-preview-button" onClick={()=>setMobilePreview(true)}>Vista mòbil</button><button className="icon-btn" title="Tancar sessió" onClick={logout}>↪</button></div></header>
+        {DEMO_MODE && <div className="notice" role="status">DEMO · Les dades es guarden només en aquest navegador <button className="secondary" onClick={()=>{if(window.confirm("Restablir les dades de demostració d'aquest navegador?")){initializeDemo(true);window.location.reload();}}}>Restablir demo</button></div>}
+        <header className="topbar"><div><small>{today()}</small><strong>{sectionTitle(section)}</strong></div><div className="topbar-actions"><button className="mobile-preview-button" onClick={()=>setMobilePreview(true)}>Vista mòbil</button>{!DEMO_MODE&&<button className="icon-btn" title="Tancar sessió" onClick={logout}>↪</button>}</div></header>
         {section === "inici" && <Dashboard account={current} go={setSection} notify={notify} />}
         {section === "entrenar" && <Training account={current} notify={notify} />}
         {section === "progres" && <Progress account={current} notify={notify} />}
@@ -460,7 +471,8 @@ function ShoppingList({account}:{account:Account}){
 }
 
 function Marketplace({account,notify}:{account:Account;notify:(s:string)=>void}) {
-  const [items,setItems]=useState<Listing[]>(()=>read("tf_listings",[]));
+  const listingsKey=DEMO_MODE?"tf_demo_listings":"tf_listings";
+  const [items,setItems]=useState<Listing[]>(()=>read(listingsKey,[]));
   const [query,setQuery]=useState("");
   const [category,setCategory]=useState("Totes");
   const [showForm,setShowForm]=useState(false);
@@ -471,7 +483,7 @@ function Marketplace({account,notify}:{account:Account;notify:(s:string)=>void})
   const [editingId,setEditingId]=useState("");
   const categories=["Totes","Roba","Accessoris","Equipament","Suplementació"];
   useEffect(()=>{write(`tf_fav_${account.id}`,favorites);},[favorites,account.id]);
-  async function persistItems(next:Listing[],success:string):Promise<boolean>{if(!write("tf_listings",next)){notify("No s'ha pogut desar l'anunci.");return false;}try{await confirmCloudWrite("tf_listings");setItems(next);notify(success);return true;}catch(error){notify(error instanceof Error?`No s'ha pogut sincronitzar l'anunci: ${error.message}`:"No s'ha pogut sincronitzar l'anunci.");return false;}}
+  async function persistItems(next:Listing[],success:string):Promise<boolean>{if(!write(listingsKey,next)){notify("No s'ha pogut desar l'anunci.");return false;}try{await confirmCloudWrite(listingsKey);setItems(next);notify(DEMO_MODE?success.replaceAll("al servidor","en aquest navegador"):success);return true;}catch(error){notify(error instanceof Error?`No s'ha pogut sincronitzar l'anunci: ${error.message}`:"No s'ha pogut sincronitzar l'anunci.");return false;}}
   function publish(e:React.FormEvent<HTMLFormElement>){e.preventDefault();const d=new FormData(e.currentTarget);const photoFile=d.get("photo") as File|null;if(photoFile&&photoFile.size){if(photoFile.size>2*1024*1024){notify("La fotografia supera el límit actual de 2 MB.");return;}const reader=new FileReader();reader.onload=()=>{void finish(String(reader.result));};reader.onerror=()=>notify("No s'ha pogut llegir la fotografia.");reader.readAsDataURL(photoFile);}else void finish(editingId?items.find(i=>i.id===editingId)?.photo||"": "");
     async function finish(photoData:string){const base={name:String(d.get("name")),price:Number(d.get("price")),category:String(d.get("category")),state:String(d.get("state")),location:String(d.get("location")),seller:account.name,description:String(d.get("description")),brand:String(d.get("brand")||""),delivery:String(d.get("delivery")||""),photo:photoData};const next=editingId?items.map(i=>i.id===editingId?{...i,...base}:i):[{id:uid(),...base,owner:account.id,status:"Disponible" as const},...items];if(await persistItems(next,editingId?"Anunci actualitzat al servidor.":"Anunci publicat al servidor.")){setEditingId("");setShowForm(false);}}}
   let filtered=items.filter(i=>(category==="Totes"||i.category===category)&&(stateFilter==="Tots"||i.state===stateFilter)&&i.name.toLowerCase().includes(query.toLowerCase()));
@@ -571,13 +583,14 @@ function Social({account,notify}:{account:Account;notify:(s:string)=>void}) {
     {id:"5-routines",name:"5 sessions amb rutines",description:"Completa cinc entrenaments iniciats des de rutines",goal:5,reward:"Insígnia Rutina"},
   ];
   async function refreshFriends(){
+    if (DEMO_MODE) { setFriends(demoFriends(`tf_demo_friends_${account.id}`)); return; }
     const response=await fetch("/api/friends",{credentials:"same-origin"});
     const result=await response.json();
     if(!response.ok)throw new Error(result.error||"No s'ha pogut carregar la llista d'amics.");
     setFriends(result.friends);
   }
-  useEffect(()=>{let cancelled=false;fetch("/api/friends",{credentials:"same-origin"}).then(async response=>{const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut carregar la llista d'amics.");if(!cancelled)setFriends(result.friends);}).catch(error=>{if(!cancelled)notify(error instanceof Error?error.message:"No s'ha pogut carregar la llista d'amics.");});return()=>{cancelled=true;};},[account.id]);
-  useEffect(()=>{if(query.trim().length<2){setAvailable([]);return;}let cancelled=false;const timer=window.setTimeout(()=>{fetch(`/api/users?q=${encodeURIComponent(query.trim())}`,{credentials:"same-origin"}).then(async response=>{const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut cercar usuaris.");if(!cancelled)setAvailable(result.users);}).catch(error=>{if(!cancelled)notify(error instanceof Error?error.message:"No s'ha pogut cercar usuaris.");});},220);return()=>{cancelled=true;window.clearTimeout(timer);};},[query,account.id]);
+  useEffect(()=>{if(DEMO_MODE){setFriends(demoFriends(`tf_demo_friends_${account.id}`));return;}let cancelled=false;fetch("/api/friends",{credentials:"same-origin"}).then(async response=>{const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut carregar la llista d'amics.");if(!cancelled)setFriends(result.friends);}).catch(error=>{if(!cancelled)notify(error instanceof Error?error.message:"No s'ha pogut carregar la llista d'amics.");});return()=>{cancelled=true;};},[account.id]);
+  useEffect(()=>{if(query.trim().length<2){setAvailable([]);return;}if(DEMO_MODE){setAvailable([{id:"demo-person-1",name:"Clara Demo"},{id:"demo-person-2",name:"Pau Demo"},{id:"demo-person-3",name:"Núria Demo"}].filter(u=>u.name.toLowerCase().includes(query.toLowerCase())));return;}let cancelled=false;const timer=window.setTimeout(()=>{fetch(`/api/users?q=${encodeURIComponent(query.trim())}`,{credentials:"same-origin"}).then(async response=>{const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut cercar usuaris.");if(!cancelled)setAvailable(result.users);}).catch(error=>{if(!cancelled)notify(error instanceof Error?error.message:"No s'ha pogut cercar usuaris.");});},220);return()=>{cancelled=true;window.clearTimeout(timer);};},[query,account.id]);
   function progress(id:string){
     if(id==="3-week"||id==="4-week")return new Set(sessions.filter(s=>Date.now()-new Date(s.date).getTime()<7*86400000).map(workoutKey)).size;
     if(id==="10-sessions"||id==="15-sessions")return new Set(sessions.map(workoutKey)).size;
@@ -592,9 +605,9 @@ function Social({account,notify}:{account:Account;notify:(s:string)=>void}) {
     return 0;
   }
   useEffect(()=>{const reached=challenges.filter(c=>active.some(a=>a.id===c.id)&&progress(c.id)>=c.goal).map(c=>c.id);if(reached.length){const next=Array.from(new Set([...completed,...reached]));if(next.length!==completed.length){setCompleted(next);write(`tf_completed_challenges_${account.id}`,next);notify("Repte completat i recompensa desbloquejada.");}}},[sessions,active,completed,account.id]);
-  async function addFriend(user:AvailableUser){try{const response=await fetch(`/api/friends/${encodeURIComponent(user.id)}`,{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut enviar la sol·licitud.");await refreshFriends();setAvailable(v=>v.filter(item=>item.id!==user.id));notify("Sol·licitud d'amistat enviada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut enviar la sol·licitud.");}}
-  async function accept(id:string){try{const response=await fetch(`/api/friends/${encodeURIComponent(id)}`,{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut acceptar la sol·licitud.");await refreshFriends();notify("Amistat acceptada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut acceptar la sol·licitud.");}}
-  async function removeFriend(id:string){if(!window.confirm("Eliminar aquesta amistat o sol·licitud?"))return;try{const response=await fetch(`/api/friends/${encodeURIComponent(id)}`,{method:"DELETE",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar l'amistat.");await refreshFriends();notify("Amistat eliminada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar l'amistat.");}}
+  async function addFriend(user:AvailableUser){if(DEMO_MODE){const next=[...friends,{...user,status:"Pendent" as const,direction:"outgoing" as const}];saveDemoFriends(`tf_demo_friends_${account.id}`,next);setFriends(next);setAvailable(v=>v.filter(item=>item.id!==user.id));notify("Sol·licitud demo desada en aquest navegador.");return;}try{const response=await fetch(`/api/friends/${encodeURIComponent(user.id)}`,{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut enviar la sol·licitud.");await refreshFriends();setAvailable(v=>v.filter(item=>item.id!==user.id));notify("Sol·licitud d'amistat enviada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut enviar la sol·licitud.");}}
+  async function accept(id:string){if(DEMO_MODE){const next=friends.map(f=>f.id===id?{...f,status:"Amics" as const}:f);saveDemoFriends(`tf_demo_friends_${account.id}`,next);setFriends(next);notify("Amistat demo acceptada.");return;}try{const response=await fetch(`/api/friends/${encodeURIComponent(id)}`,{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut acceptar la sol·licitud.");await refreshFriends();notify("Amistat acceptada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut acceptar la sol·licitud.");}}
+  async function removeFriend(id:string){if(!window.confirm("Eliminar aquesta amistat o sol·licitud?"))return;if(DEMO_MODE){const next=friends.filter(f=>f.id!==id);saveDemoFriends(`tf_demo_friends_${account.id}`,next);setFriends(next);notify("Relació demo eliminada.");return;}try{const response=await fetch(`/api/friends/${encodeURIComponent(id)}`,{method:"DELETE",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar l'amistat.");await refreshFriends();notify("Amistat eliminada.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar l'amistat.");}}
   function activate(id:string){if(active.some(a=>a.id===id)||completed.includes(id))return;const next=[...active,{id}];setActive(next);write(`tf_challenges_${account.id}`,next);notify("Repte activat.");}
   const friendIds=new Set(friends.map(friend=>friend.id));
   const visibleUsers=available.filter(user=>!friendIds.has(user.id));
@@ -602,7 +615,7 @@ function Social({account,notify}:{account:Account;notify:(s:string)=>void}) {
 }function Profile({account,setCurrent,notify}:{account:Account;setCurrent:(account:Account|null)=>void;notify:(s:string)=>void}) {
   const [name,setName]=useState(account.name);
   const [profile,setProfile]=useState(()=>read(`tf_profile_${account.id}`,{age:"",height:"",weight:"",experience:"Principiant",goal:"Millorar la forma",days:"3",gym:""}));
-  async function save(e:React.FormEvent){e.preventDefault();try{const response=await fetch("/api/profile",{method:"PATCH",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name.trim()})});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut actualitzar el perfil.");const key=`tf_profile_${account.id}`;if(!write(key,profile))throw new Error("No s'ha pogut desar la configuració local.");await confirmCloudWrite(key);setCurrent(result.user);notify("Perfil actualitzat al servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut actualitzar el perfil.");}}
-  async function deleteAccount(){if(!window.confirm("Vols eliminar aquest compte i totes les dades sincronitzades?"))return;try{const response=await fetch("/api/delete-account",{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar el compte.");[...Object.keys(localStorage)].filter(k=>k.endsWith(account.id)||k.startsWith(`tf_migration_backup_${account.id}_`)).forEach(k=>localStorage.removeItem(k));deactivateCloudAccount();setCurrent(null);notify("Compte i dades eliminats del servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar el compte.");}}
-  return <div className="page"><div className="section-heading"><div><span>CONFIGURACIÓ PRIVADA</span><h2>Perfil</h2></div></div><section className="profile-layout"><form className="panel profile-card" onSubmit={save}><div className="profile-avatar">{account.name.slice(0,1).toUpperCase()}</div><label>Nom visible<input value={name} onChange={e=>setName(e.target.value)} required/></label><label>Correu electrònic<input value={account.email} readOnly/></label><div className="profile-grid"><label>Edat<input type="number" min="14" value={profile.age} onChange={e=>setProfile({...profile,age:e.target.value})}/></label><label>Altura (cm)<input type="number" min="100" value={profile.height} onChange={e=>setProfile({...profile,height:e.target.value})}/></label><label>Pes corporal (kg)<input type="number" step="0.1" value={profile.weight} onChange={e=>setProfile({...profile,weight:e.target.value})}/></label><label>Experiència<select value={profile.experience} onChange={e=>setProfile({...profile,experience:e.target.value})}><option>Principiant</option><option>Intermedi</option><option>Avançat</option></select></label><label>Objectiu<select value={profile.goal} onChange={e=>setProfile({...profile,goal:e.target.value})}><option>Millorar la forma</option><option>Guanyar força</option><option>Guanyar massa muscular</option><option>Pèrdua de pes</option></select></label><label>Dies disponibles<input type="number" min="1" max="7" value={profile.days} onChange={e=>setProfile({...profile,days:e.target.value})}/></label><label>Gimnàs habitual<input value={profile.gym} onChange={e=>setProfile({...profile,gym:e.target.value})} placeholder="Opcional"/></label></div><button className="primary" type="submit">Guardar canvis</button></form><aside className="panel privacy-panel"><span className="eyebrow">PRIVACITAT</span><h3>Les teves dades se sincronitzen al servidor</h3><p>La sessió és privada i les dades personals s'aïllen per compte. La sincronització funciona quan TITANFIT està desplegat en un servidor accessible.</p><button className="danger full" onClick={deleteAccount}>Eliminar el compte i les dades</button></aside></section></div>;
+  async function save(e:React.FormEvent){e.preventDefault();try{const key=`tf_profile_${account.id}`;if(!write(key,profile))throw new Error("No s'ha pogut desar la configuració local.");await confirmCloudWrite(key);const updated={...account,name:name.trim()};if(DEMO_MODE)write("tf_demo_account",updated);setCurrent(updated);notify(DEMO_MODE?"Perfil desat en aquest navegador.":"Perfil actualitzat al servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut actualitzar el perfil.");}}
+  async function deleteAccount(){if(DEMO_MODE){if(window.confirm("Restablir les dades demo?")){initializeDemo(true);window.location.reload();}return;}if(!window.confirm("Vols eliminar aquest compte i totes les dades sincronitzades?"))return;try{const response=await fetch("/api/delete-account",{method:"POST",credentials:"same-origin"});const result=await response.json();if(!response.ok)throw new Error(result.error||"No s'ha pogut eliminar el compte.");[...Object.keys(localStorage)].filter(k=>k.endsWith(account.id)||k.startsWith(`tf_migration_backup_${account.id}_`)).forEach(k=>localStorage.removeItem(k));deactivateCloudAccount();setCurrent(null);notify("Compte i dades eliminats del servidor.");}catch(error){notify(error instanceof Error?error.message:"No s'ha pogut eliminar el compte.");}}
+  return <div className="page"><div className="section-heading"><div><span>CONFIGURACIÓ PRIVADA</span><h2>Perfil</h2></div></div><section className="profile-layout"><form className="panel profile-card" onSubmit={save}><div className="profile-avatar">{account.name.slice(0,1).toUpperCase()}</div><label>Nom visible<input value={name} onChange={e=>setName(e.target.value)} required/></label><label>Correu electrònic<input value={account.email} readOnly/></label><div className="profile-grid"><label>Edat<input type="number" min="14" value={profile.age} onChange={e=>setProfile({...profile,age:e.target.value})}/></label><label>Altura (cm)<input type="number" min="100" value={profile.height} onChange={e=>setProfile({...profile,height:e.target.value})}/></label><label>Pes corporal (kg)<input type="number" step="0.1" value={profile.weight} onChange={e=>setProfile({...profile,weight:e.target.value})}/></label><label>Experiència<select value={profile.experience} onChange={e=>setProfile({...profile,experience:e.target.value})}><option>Principiant</option><option>Intermedi</option><option>Avançat</option></select></label><label>Objectiu<select value={profile.goal} onChange={e=>setProfile({...profile,goal:e.target.value})}><option>Millorar la forma</option><option>Guanyar força</option><option>Guanyar massa muscular</option><option>Pèrdua de pes</option></select></label><label>Dies disponibles<input type="number" min="1" max="7" value={profile.days} onChange={e=>setProfile({...profile,days:e.target.value})}/></label><label>Gimnàs habitual<input value={profile.gym} onChange={e=>setProfile({...profile,gym:e.target.value})} placeholder="Opcional"/></label></div><button className="primary" type="submit">Guardar canvis</button></form><aside className="panel privacy-panel"><span className="eyebrow">PRIVACITAT</span><h3>{DEMO_MODE?"Demostració en aquest navegador":"Les teves dades se sincronitzen al servidor"}</h3><p>{DEMO_MODE?"Les modificacions queden guardades localment en aquest navegador i no s'envien a cap servidor.":"La sessió és privada i les dades personals s'aïllen per compte. La sincronització funciona quan TITANFIT està desplegat en un servidor accessible."}</p><button className="danger full" onClick={deleteAccount}>{DEMO_MODE?"Restablir dades demo":"Eliminar el compte i les dades"}</button></aside></section></div>;
 }
